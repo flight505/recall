@@ -1,0 +1,24 @@
+{
+  "name": "recall",
+  "version": "1.0.0",
+  "description": "Zero-infrastructure memory for Claude Code — captures session knowledge to markdown, injects relevant context on startup, survives compaction.",
+  "author": {
+    "name": "Jesper Vang",
+    "email": "jesper_vang@me.com",
+    "url": "https://github.com/flight505"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/flight505/recall",
+  "homepage": "https://github.com/flight505/recall",
+  "keywords": [
+    "claude-cli",
+    "memory",
+    "context-persistence",
+    "session-history",
+    "episodic-memory",
+    "semantic-memory"
+  ],
+  "skills": [
+    "./skills/recall"
+  ]
+}
