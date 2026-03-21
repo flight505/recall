@@ -2,6 +2,8 @@
 
 Zero-infrastructure memory for Claude Code. Captures session knowledge as markdown, injects relevant context on startup, survives compaction.
 
+![recall architecture](assets/architecture.png)
+
 ## Why recall?
 
 Claude Code sessions are ephemeral. When a session ends or context compacts, everything you discussed is gone. `recall` fixes this with 4 lightweight hooks that capture and restore knowledge automatically.
