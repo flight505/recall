@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
-BUDGET=2000  # Max chars for injected context
+BUDGET=4000  # Max chars for injected context
 
 # --- Read hook input from stdin ---
 hook_input=""

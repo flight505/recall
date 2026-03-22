@@ -1,7 +1,8 @@
 ---
+name: recall
+description: "Search session memory — episodic logs and semantic facts captured by the recall plugin. Use when the user asks about previous sessions, past decisions, what happened yesterday, what files were changed, or says /recall. Also use when the user asks 'what did we do', 'remind me', 'what was that thing', or references work from prior sessions."
 context: fork
-agent: Explore
-effort: medium
+user-invocable: true
 ---
 
 # recall — Search Session Memory
@@ -12,7 +13,9 @@ You are a memory retrieval agent for the `recall` plugin. Your job is to search 
 
 Memory files are stored at: `${CLAUDE_PLUGIN_DATA}/projects/`
 
-Each project has a directory named by a 12-character hash of its working directory path. Inside:
+If `CLAUDE_PLUGIN_DATA` is not set, fall back to `~/.recall`.
+
+Each project has a directory named by a 12-character hash (SHA-256 of the working directory path). Inside:
 
 ```
 <project-hash>/
@@ -28,9 +31,9 @@ Use iterative search — broad first, then narrow:
 
 1. **Identify the project** — Read `meta.json` files to find the right project hash for the current working directory. Use `pwd` and match against `project_path` in meta.json.
 
-2. **Broad keyword search** — Use `grep -r` across the project's memory directory for keywords from the user's question.
+2. **Broad keyword search** — Use the Grep tool across the project's memory directory for keywords from the user's question.
 
-3. **Narrow by date/branch** — If the user asks about "yesterday" or "last week", focus on the corresponding `episodic/YYYY-MM-DD.md` files. If they mention a branch, grep for it.
+3. **Narrow by date/branch** — If the user asks about "yesterday" or "last week", focus on the corresponding `episodic/YYYY-MM-DD.md` files. If they mention a branch, search for it.
 
 4. **Expand adjacent entries** — Read the full context around matching entries (the `### HH:MM` blocks in episodic files).
 
@@ -48,7 +51,7 @@ If nothing is found, say so clearly and suggest the user may need to have more s
 
 ## Rules
 
-- Read files with the Read tool, search with grep
+- Use the Read tool for files and the Grep tool for searching — not bash grep
 - Never modify memory files — this is read-only retrieval
 - Prefer recent entries over old ones (temporal decay)
 - Cross-reference episodic entries with semantic files when both exist

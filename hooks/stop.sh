@@ -59,6 +59,10 @@ first_user="$(json_field "$summary_json" "first_user")"
 last_user="$(json_field "$summary_json" "last_user")"
 last_assistant="$(json_field "$summary_json" "last_assistant")"
 tool_count="$(json_field "$summary_json" "tool_count")"
+tool_names="$(json_field "$summary_json" "tool_names")"
+file_paths="$(json_field "$summary_json" "file_paths")"
+middle_sample="$(json_field "$summary_json" "middle_sample")"
+error_count="$(json_field "$summary_json" "error_count")"
 
 # Skip if no meaningful content
 if [ -z "$first_user" ] && [ -z "$last_assistant" ]; then
@@ -74,6 +78,9 @@ project_name="$(basename "$cwd")"
 first_user_t="$(truncate_to "$first_user" 500)"
 last_user_t="$(truncate_to "$last_user" 500)"
 last_assistant_t="$(truncate_to "$last_assistant" 1000)"
+tool_names_t="$(truncate_to "$tool_names" 100)"
+file_paths_t="$(truncate_to "$file_paths" 300)"
+middle_sample_t="$(truncate_to "$middle_sample" 500)"
 
 # --- Summarize with haiku ---
 prompt="Summarize this Claude Code session in a compact markdown block. Use EXACTLY this format:
@@ -81,17 +88,22 @@ prompt="Summarize this Claude Code session in a compact markdown block. Use EXAC
 ### HH:MM — <one-line summary>
 - **Goal:** <what the user wanted>
 - **Outcome:** <what was achieved>
-- **Key files:** <comma-separated list of important files>
+- **Key files:** <comma-separated list of important files, use the files touched list below>
 - **Decisions:** <any notable choices made>
 - **Open:** <unfinished work or next steps, or 'None'>
 
 Context:
 - Project: ${project_name}
 - Branch: ${branch}
-- Tools used: ${tool_count}
+- Tools used: ${tool_count} (${tool_names_t})
+- Files touched: ${file_paths_t}
+- Errors: ${error_count}
 
 First user message:
 ${first_user_t}
+
+Mid-session context:
+${middle_sample_t}
 
 Last user message:
 ${last_user_t}
@@ -103,6 +115,7 @@ Rules:
 - Output ONLY the markdown block, nothing else
 - Use the current time for HH:MM
 - Keep each bullet to one line
+- For Key files, prefer the actual file paths from 'Files touched' over guessing
 - If no decisions were made, write 'None'
 - If nothing is open, write 'None'"
 

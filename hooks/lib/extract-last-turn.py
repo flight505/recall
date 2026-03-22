@@ -2,7 +2,8 @@
 """Extract conversation data from Claude Code JSONL transcript.
 
 Two modes:
-  summary  — For stop.sh: first/last user msg + last assistant response + tool count
+  summary  — For stop.sh: first/last user msg, middle samples, last assistant response,
+              tool count/names, file paths, error count
   working  — For pre-compact.sh: last 5 user msgs, last 3 assistant msgs, file paths
 
 Streams JSONL line-by-line — never loads full file into memory.
@@ -56,11 +57,15 @@ def extract_file_paths(content):
 
 
 def mode_summary(lines):
-    """Summary mode: first user msg, last user msg, last assistant response, tool count."""
+    """Summary mode: rich extraction for episodic capture."""
     first_user = None
     last_user = None
     last_assistant = None
+    all_user_msgs = []
     tool_count = 0
+    tool_names = set()
+    file_paths = set()
+    error_count = 0
 
     for line in lines:
         line = line.strip()
@@ -71,8 +76,18 @@ def mode_summary(lines):
         except json.JSONDecodeError:
             continue
 
+        # Handle both top-level role and nested message.role formats
         role = entry.get("role", "")
         content = entry.get("content", "")
+        if not role and "message" in entry:
+            msg = entry["message"]
+            if isinstance(msg, dict):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+
+        # Skip non-conversation entries (progress, system, queue-operation, etc.)
+        if role not in ("user", "assistant"):
+            continue
 
         if role == "user":
             text = extract_text(content)
@@ -80,22 +95,43 @@ def mode_summary(lines):
                 if first_user is None:
                     first_user = text.strip()
                 last_user = text.strip()
+                all_user_msgs.append(text.strip())
+            # Count error results from tool_result blocks
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        if block.get("is_error"):
+                            error_count += 1
 
         elif role == "assistant":
             text = extract_text(content)
             if text.strip():
                 last_assistant = text.strip()
-            # Count tool uses
+            # Count tool uses, collect names and file paths
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         tool_count += 1
+                        tool_names.add(block.get("name", "unknown"))
+            file_paths.update(extract_file_paths(content))
+
+    # Build middle sample: up to 3 evenly-spaced user messages from the middle
+    middle_sample = ""
+    if len(all_user_msgs) > 2:
+        middles = all_user_msgs[1:-1]
+        step = max(1, len(middles) // 3)
+        samples = middles[::step][:3]
+        middle_sample = " | ".join(s[:200] for s in samples)
 
     result = {
         "first_user": first_user or "",
         "last_user": last_user or "",
         "last_assistant": last_assistant or "",
         "tool_count": tool_count,
+        "tool_names": ", ".join(sorted(tool_names)),
+        "file_paths": ", ".join(sorted(file_paths)[:20]),
+        "middle_sample": middle_sample,
+        "error_count": error_count,
     }
     json.dump(result, sys.stdout)
 
