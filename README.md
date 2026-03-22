@@ -20,30 +20,11 @@ claude plugin add flight505/recall
 
 ## How It Works
 
-```
-Session ends
-    |
-    v
-[Stop hook] --- claude -p --model haiku ---> summarize session
-    |                                              |
-    v                                              v
-episodic/2026-03-21.md  <----  "### 14:30 — Added auth middleware"
+1. **Session ends** — The Stop hook extracts file paths, tool names, mid-session messages, and error counts from the transcript, then sends them to Haiku for a structured summary. The summary is appended to today's episodic log.
 
-Next session starts
-    |
-    v
-[SessionStart hook] --- read episodic + semantic ---> inject additionalContext
-    |
-    v
-Claude sees: "[recall] Last session: Added auth middleware..."
+2. **Next session starts** — The SessionStart hook reads recent episodic entries, semantic facts, and branch-matching history, then injects the most relevant context (up to 4K chars) via `additionalContext`.
 
-Context compacts
-    |
-    v
-[PreCompact] --- save working state ---> working-state.md
-[PostCompact] --- log event ---> episodic/
-[SessionStart source=compact] --- restore working state ---> additionalContext
-```
+3. **Context compacts** — PreCompact saves a working-state snapshot before context is lost. PostCompact logs the event and captures Claude's compaction summary. SessionStart restores working state when `source=compact`.
 
 ## Memory Types
 
@@ -65,34 +46,43 @@ Ask about past sessions using the recall skill:
 
 A subagent searches your memory files and returns a synthesized answer.
 
+## Architecture
+
+![recall architecture](assets/architecture.png)
+
+### Extraction Pipeline (v1.1.0)
+
+The Stop hook extracts rich data from the transcript JSONL before summarization:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `file_paths` | tool_use blocks (file_path, path, filePath keys + command regex) | Accurate "Key files" in episodic entries |
+| `tool_names` | tool_use block names (Read, Edit, Bash, etc.) | Session activity profile |
+| `middle_sample` | 3 evenly-spaced user messages from the session middle | Session arc visibility for Haiku |
+| `error_count` | tool_result blocks with `is_error: true` | Error awareness |
+| `first_user` / `last_user` / `last_assistant` | First/last conversation turns | Session bookends |
+
+### Injection Budget
+
+SessionStart injects up to **4000 characters** (~1000 tokens, <0.5% of a 200K context window) with this priority:
+
+1. Working state (only after compaction)
+2. Latest episodic entry
+3. Architecture semantic file (with 30-day staleness warning)
+4. Branch-matching episodic entries (last 7 days)
+
 ## Storage
 
-All data lives at `${CLAUDE_PLUGIN_DATA}/projects/<project-hash>/` where the hash is derived from your working directory. Files are plain markdown — human-readable, git-friendly, grep-able.
-
-## Comparison with claude-mem
-
-| | claude-mem | recall |
-|---|-----------|--------|
-| **Dependencies** | Bun, Node, uv, ChromaDB, SQLite, daemon | bash + python3 |
-| **Capture overhead** | Every tool call | Once at session end (async) |
-| **RAM usage** | 65GB+ (orphaned processes) | ~0 (no persistent processes) |
-| **Infinite loops** | Known bug in Stop hook | Recursion guard |
-| **Injection** | Timeline dump (last N) | Relevance-filtered by branch/files/date |
-| **Staleness** | None | Temporal decay + file-existence checks |
-| **Compaction** | No protection | PreCompact saves working state |
-| **File pollution** | Creates/modifies CLAUDE.md | Uses transient additionalContext only |
-| **Windows** | Broken | Cross-platform (run-hook.cmd polyglot) |
-| **Human-readable** | No (SQLite/ChromaDB) | Yes (markdown files) |
-| **Storage format** | Binary databases | Plain markdown (git-friendly) |
+All data lives at `${CLAUDE_PLUGIN_DATA}/projects/<project-hash>/` where the hash is the first 12 chars of SHA-256 of your working directory. Files are plain markdown — human-readable, git-friendly, grep-able.
 
 ## Hook Events
 
 | Hook | Event | Sync/Async | Timeout | What it does |
 |------|-------|-----------|---------|-------------|
-| `session-start.sh` | SessionStart | sync | 5s | Inject recalled memories |
-| `stop.sh` | Stop | async | 30s | Capture session summary |
+| `session-start.sh` | SessionStart | sync | 5s | Inject recalled memories (4K budget) |
+| `stop.sh` | Stop | async | 30s | Extract + summarize session |
 | `pre-compact.sh` | PreCompact | sync | 30s | Save working state |
-| `post-compact.sh` | PostCompact | sync | 5s | Log compaction event |
+| `post-compact.sh` | PostCompact | sync | 5s | Log event + capture compact_summary |
 
 ## Configuration
 
