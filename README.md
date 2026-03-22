@@ -2,7 +2,7 @@
 
 Zero-infrastructure memory for Claude Code. Captures session knowledge as markdown, injects relevant context on startup, survives compaction.
 
-![recall architecture](assets/architecture.png)
+![How recall works](assets/how-it-works.png)
 
 ## Why recall?
 
