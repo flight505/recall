@@ -14,6 +14,36 @@ import json
 import sys
 import re
 
+# Prefixes that indicate system-injected content, not real user intent
+NOISE_PREFIXES = (
+    "<command-message>",
+    "<command-name>",
+    "<task-notification>",
+    "<system-reminder>",
+    "<local-command",
+    "<command-args>",
+    "Base directory for this skill:",
+    "# ",  # Skill expansions start with markdown headers
+)
+
+
+def is_noise(text):
+    """Check if a user message is system-injected noise rather than real user input."""
+    stripped = text.strip()
+    if not stripped:
+        return True
+    # Check for known system prefixes
+    for prefix in NOISE_PREFIXES:
+        if stripped.startswith(prefix):
+            return True
+    # Tool results are not user intent
+    if stripped.startswith("<tool_result") or stripped.startswith("<function_results"):
+        return True
+    # Very short messages that are just command invocations
+    if len(stripped) < 5 and stripped.startswith("/"):
+        return True
+    return False
+
 
 def extract_text(content):
     """Extract text from message content (string or list of blocks)."""
@@ -92,10 +122,13 @@ def mode_summary(lines):
         if role == "user":
             text = extract_text(content)
             if text.strip():
-                if first_user is None:
-                    first_user = text.strip()
-                last_user = text.strip()
-                all_user_msgs.append(text.strip())
+                clean = text.strip()
+                # For first/last user, skip noise to find real user intent
+                if not is_noise(clean):
+                    if first_user is None:
+                        first_user = clean
+                    last_user = clean
+                    all_user_msgs.append(clean)
             # Count error results from tool_result blocks
             if isinstance(content, list):
                 for block in content:
