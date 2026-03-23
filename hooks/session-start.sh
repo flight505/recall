@@ -171,10 +171,22 @@ if [ "$source_event" = "resume" ] && [ "$total_chars" -lt "$((BUDGET - 100))" ];
     fi
 fi
 
+# --- Check for session-close instruction in global CLAUDE.md ---
+recall_hint=""
+global_claude_md="${HOME}/.claude/CLAUDE.md"
+if [ -f "$global_claude_md" ]; then
+    if ! grep -q "Session Close (for recall)" "$global_claude_md" 2>/dev/null; then
+        recall_hint="[recall tip] Add a 'Session Close (for recall)' section to ~/.claude/CLAUDE.md — when Claude includes a 4-line session recap in its final response, recall captures much better episodic memories."
+    fi
+fi
+
 # --- Build output ---
 if [ "${#sections[@]}" -eq 0 ]; then
     # No memories yet — still output a minimal message
     context_text="[recall] No memories stored yet for this project. Memories will be captured when you end sessions."
+    if [ -n "$recall_hint" ]; then
+        context_text="${context_text}\n${recall_hint}"
+    fi
 else
     header="[recall] Recalled context for $(basename "$(pwd)"):"
     body=""

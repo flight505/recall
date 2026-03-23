@@ -52,6 +52,34 @@ if [ "$line_count" -lt 10 ]; then
     exit 0
 fi
 
+# --- Check for session recap in last_assistant_message (from CLAUDE.md instruction) ---
+last_assistant_msg=""
+if [ -n "$hook_input" ]; then
+    last_assistant_msg="$(json_field "$hook_input" "last_assistant_message")"
+fi
+
+# If Claude included a session recap block, we can use it directly
+session_recap=""
+if [ -n "$last_assistant_msg" ]; then
+    session_recap="$(python3 -c "
+import sys
+text = sys.argv[1]
+# Look for the structured recap block
+lines = text.split('\n')
+in_recap = False
+recap = []
+for line in lines:
+    if '**Session:**' in line:
+        in_recap = True
+    if in_recap:
+        recap.append(line.strip())
+        if '**Open:**' in line:
+            break
+if recap:
+    print('\n'.join(recap))
+" "$last_assistant_msg" 2>/dev/null || echo "")"
+fi
+
 # --- Extract summary data ---
 summary_json="$(python3 "${SCRIPT_DIR}/lib/extract-last-turn.py" summary < "$transcript_path")"
 
@@ -87,8 +115,18 @@ edited_files_t="$(truncate_to "$edited_files" 200)"
 git_commits_t="$(truncate_to "$git_commits" 500)"
 decision_lines_t="$(truncate_to "$decision_lines" 400)"
 user_intent_t="$(truncate_to "$user_intent" 400)"
+session_recap_t="$(truncate_to "$session_recap" 300)"
 
 # --- Summarize with haiku ---
+# If Claude left a session recap, include it as the highest-quality signal
+recap_section=""
+if [ -n "$session_recap_t" ]; then
+    recap_section="
+Claude's own session recap (HIGHEST PRIORITY — use this as the primary source):
+${session_recap_t}
+"
+fi
+
 prompt="Summarize this Claude Code session in a compact markdown block. Use EXACTLY this format:
 
 ### HH:MM — <one-line summary>
@@ -97,7 +135,7 @@ prompt="Summarize this Claude Code session in a compact markdown block. Use EXAC
 - **Key files:** <comma-separated list of important files>
 - **Decisions:** <any notable choices made>
 - **Open:** <unfinished work or next steps, or 'None'>
-
+${recap_section}
 Git commits made this session (AUTHORITATIVE — base your summary on these):
 ${git_log}
 
@@ -124,6 +162,7 @@ Rules:
 - Output ONLY the markdown block, nothing else
 - Use the current time for HH:MM
 - Keep each bullet to one line
+- If a session recap is provided, it is the most accurate source — prioritize it
 - The git commits are the ground truth of what was done — use them for Outcome
 - Use the user intent messages for Goal
 - For Key files, use the files from commits and edits, not guesses
