@@ -57,15 +57,17 @@ summary_json="$(python3 "${SCRIPT_DIR}/lib/extract-last-turn.py" summary < "$tra
 
 first_user="$(json_field "$summary_json" "first_user")"
 last_user="$(json_field "$summary_json" "last_user")"
-last_assistant="$(json_field "$summary_json" "last_assistant")"
 tool_count="$(json_field "$summary_json" "tool_count")"
 tool_names="$(json_field "$summary_json" "tool_names")"
 file_paths="$(json_field "$summary_json" "file_paths")"
-middle_sample="$(json_field "$summary_json" "middle_sample")"
 error_count="$(json_field "$summary_json" "error_count")"
+git_commits="$(json_field "$summary_json" "git_commits")"
+decision_lines="$(json_field "$summary_json" "decision_lines")"
+edited_files="$(json_field "$summary_json" "edited_files")"
+user_intent="$(json_field "$summary_json" "user_intent")"
 
 # Skip if no meaningful content
-if [ -z "$first_user" ] && [ -z "$last_assistant" ]; then
+if [ -z "$first_user" ] && [ -z "$git_commits" ] && [ "$tool_count" -lt 5 ] 2>/dev/null; then
     exit 0
 fi
 
@@ -74,13 +76,17 @@ branch="$(git branch --show-current 2>/dev/null || echo "unknown")"
 cwd="$(pwd)"
 project_name="$(basename "$cwd")"
 
-# Truncate inputs to keep the haiku prompt reasonable
-first_user_t="$(truncate_to "$first_user" 500)"
-last_user_t="$(truncate_to "$last_user" 500)"
-last_assistant_t="$(truncate_to "$last_assistant" 1000)"
+# --- Get git log for this session (actual commits are authoritative) ---
+git_log="$(git log --oneline --since='12 hours ago' --no-merges 2>/dev/null | head -10 || echo "")"
+
+# Truncate inputs
+first_user_t="$(truncate_to "$first_user" 300)"
+last_user_t="$(truncate_to "$last_user" 300)"
 tool_names_t="$(truncate_to "$tool_names" 100)"
-file_paths_t="$(truncate_to "$file_paths" 300)"
-middle_sample_t="$(truncate_to "$middle_sample" 500)"
+edited_files_t="$(truncate_to "$edited_files" 200)"
+git_commits_t="$(truncate_to "$git_commits" 500)"
+decision_lines_t="$(truncate_to "$decision_lines" 400)"
+user_intent_t="$(truncate_to "$user_intent" 400)"
 
 # --- Summarize with haiku ---
 prompt="Summarize this Claude Code session in a compact markdown block. Use EXACTLY this format:
@@ -88,34 +94,39 @@ prompt="Summarize this Claude Code session in a compact markdown block. Use EXAC
 ### HH:MM — <one-line summary>
 - **Goal:** <what the user wanted>
 - **Outcome:** <what was achieved>
-- **Key files:** <comma-separated list of important files, use the files touched list below>
+- **Key files:** <comma-separated list of important files>
 - **Decisions:** <any notable choices made>
 - **Open:** <unfinished work or next steps, or 'None'>
+
+Git commits made this session (AUTHORITATIVE — base your summary on these):
+${git_log}
+
+Commit messages from transcript:
+${git_commits_t}
+
+Key decisions/milestones:
+${decision_lines_t}
+
+Files edited: ${edited_files_t}
+Tools used: ${tool_count} (${tool_names_t})
+Errors: ${error_count}
+
+User intent (what the user asked for):
+First: ${first_user_t}
+Mid-session: ${user_intent_t}
+Last: ${last_user_t}
 
 Context:
 - Project: ${project_name}
 - Branch: ${branch}
-- Tools used: ${tool_count} (${tool_names_t})
-- Files touched: ${file_paths_t}
-- Errors: ${error_count}
-
-First user message:
-${first_user_t}
-
-Mid-session context:
-${middle_sample_t}
-
-Last user message:
-${last_user_t}
-
-Last assistant response:
-${last_assistant_t}
 
 Rules:
 - Output ONLY the markdown block, nothing else
 - Use the current time for HH:MM
 - Keep each bullet to one line
-- For Key files, prefer the actual file paths from 'Files touched' over guessing
+- The git commits are the ground truth of what was done — use them for Outcome
+- Use the user intent messages for Goal
+- For Key files, use the files from commits and edits, not guesses
 - If no decisions were made, write 'None'
 - If nothing is open, write 'None'"
 

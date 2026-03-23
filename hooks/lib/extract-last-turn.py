@@ -11,6 +11,7 @@ Reads from stdin.
 """
 
 import json
+import os
 import sys
 import re
 
@@ -86,16 +87,85 @@ def extract_file_paths(content):
     return paths
 
 
+def extract_git_commits(content):
+    """Extract git commit messages from Bash tool_use blocks."""
+    commits = []
+    if not isinstance(content, list):
+        return commits
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        inp = block.get("input", {})
+        if not isinstance(inp, dict):
+            continue
+        cmd = inp.get("command", "")
+        if not isinstance(cmd, str):
+            continue
+        if "git commit" in cmd:
+            # Extract from heredoc: -m "$(cat <<'EOF'\n...\nEOF\n)"
+            m = re.search(r"cat <<['\"]?EOF['\"]?\n(.*?)\nEOF", cmd, re.DOTALL)
+            if m:
+                commits.append(m.group(1).strip()[:200])
+            else:
+                # Simple -m "message"
+                m = re.search(r'-m\s+["\']([^"\']+)["\']', cmd)
+                if m:
+                    commits.append(m.group(1).strip()[:200])
+        elif "git push" in cmd:
+            commits.append("[pushed to remote]")
+    return commits
+
+
+def extract_decision_lines(text):
+    """Extract lines containing decision/milestone language from assistant text."""
+    DECISION_RE = re.compile(
+        r'## Decision:|'
+        r'\*\*Chose:\*\*|'
+        r'\*\*Intervention:\*\*|'
+        r'feat:|fix:|docs:|refactor:|'
+        r'v\d+\.\d+\.\d+|'
+        r'committed|pushed to|SCORE:|'
+        r'highest.impact|the real bottleneck|root cause',
+        re.IGNORECASE
+    )
+    lines = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if line and DECISION_RE.search(line):
+            lines.append(line[:150])
+    return lines
+
+
+def extract_edited_files(content):
+    """Extract basenames of files modified by Edit/Write tools."""
+    edits = []
+    if not isinstance(content, list):
+        return edits
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = block.get("name", "")
+        if name in ("Edit", "Write"):
+            inp = block.get("input", {})
+            if isinstance(inp, dict):
+                fp = inp.get("file_path", "")
+                if fp:
+                    edits.append(os.path.basename(fp))
+    return edits
+
+
 def mode_summary(lines):
-    """Summary mode: rich extraction for episodic capture."""
+    """Summary mode: git commits + tool actions as primary signal, user messages as secondary."""
     first_user = None
     last_user = None
-    last_assistant = None
     all_user_msgs = []
     tool_count = 0
     tool_names = set()
     file_paths = set()
     error_count = 0
+    git_commits = []
+    decision_lines = []
+    edited_files = []
 
     for line in lines:
         line = line.strip()
@@ -123,13 +193,12 @@ def mode_summary(lines):
             text = extract_text(content)
             if text.strip():
                 clean = text.strip()
-                # For first/last user, skip noise to find real user intent
                 if not is_noise(clean):
                     if first_user is None:
                         first_user = clean
                     last_user = clean
                     all_user_msgs.append(clean)
-            # Count error results from tool_result blocks
+            # Count error results
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
@@ -138,33 +207,62 @@ def mode_summary(lines):
 
         elif role == "assistant":
             text = extract_text(content)
+            # Extract decision lines from assistant text
             if text.strip():
-                last_assistant = text.strip()
-            # Count tool uses, collect names and file paths
+                decision_lines.extend(extract_decision_lines(text))
+            # Count tool uses, collect names, file paths, commits, edits
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         tool_count += 1
                         tool_names.add(block.get("name", "unknown"))
+                git_commits.extend(extract_git_commits(content))
+                edited_files.extend(extract_edited_files(content))
             file_paths.update(extract_file_paths(content))
 
-    # Build middle sample: up to 3 evenly-spaced user messages from the middle
-    middle_sample = ""
+    # Deduplicate
+    unique_edits = sorted(set(edited_files))
+
+    # Deduplicate decision lines, keep order, max 5
+    seen = set()
+    unique_decisions = []
+    for dl in decision_lines:
+        if dl not in seen:
+            seen.add(dl)
+            unique_decisions.append(dl)
+        if len(unique_decisions) >= 5:
+            break
+
+    # Build user intent sample: up to 3 from middle, keyword-weighted
+    INTENT_RE = re.compile(
+        r'\b(want|need|fix|add|change|create|update|implement|'
+        r'plan|research|assess|improve|commit|push|review|test|'
+        r'recommend|should|lets|let\'s)\b',
+        re.IGNORECASE
+    )
+    user_intent = ""
     if len(all_user_msgs) > 2:
         middles = all_user_msgs[1:-1]
-        step = max(1, len(middles) // 3)
-        samples = middles[::step][:3]
-        middle_sample = " | ".join(s[:200] for s in samples)
+        scored = [(len(INTENT_RE.findall(m)) + min(len(m) // 100, 3), m) for m in middles]
+        scored.sort(reverse=True)
+        samples = [m for _, m in scored[:3]]
+        user_intent = " | ".join(s[:200] for s in samples)
+    elif len(all_user_msgs) == 2:
+        user_intent = all_user_msgs[1][:200]
 
     result = {
         "first_user": first_user or "",
         "last_user": last_user or "",
-        "last_assistant": last_assistant or "",
         "tool_count": tool_count,
         "tool_names": ", ".join(sorted(tool_names)),
         "file_paths": ", ".join(sorted(file_paths)[:20]),
-        "middle_sample": middle_sample,
         "error_count": error_count,
+        # New primary signals
+        "git_commits": " || ".join(git_commits[:10]),
+        "decision_lines": " || ".join(unique_decisions),
+        "edited_files": ", ".join(unique_edits[:15]),
+        # User intent (secondary, keyword-weighted)
+        "user_intent": user_intent,
     }
     json.dump(result, sys.stdout)
 
