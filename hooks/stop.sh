@@ -80,19 +80,20 @@ if recap:
 " "$last_assistant_msg" 2>/dev/null || echo "")"
 fi
 
-# --- Extract summary data ---
-summary_json="$(python3 "${SCRIPT_DIR}/lib/extract-last-turn.py" summary < "$transcript_path")"
+# --- Extract compressed session data ---
+# Uses anchored compression: strips mechanical overhead (tool results, progress,
+# system entries) while preserving the full conversational narrative + anchors
+compress_json="$(python3 "${SCRIPT_DIR}/lib/extract-last-turn.py" compress < "$transcript_path")"
 
-first_user="$(json_field "$summary_json" "first_user")"
-last_user="$(json_field "$summary_json" "last_user")"
-tool_count="$(json_field "$summary_json" "tool_count")"
-tool_names="$(json_field "$summary_json" "tool_names")"
-file_paths="$(json_field "$summary_json" "file_paths")"
-error_count="$(json_field "$summary_json" "error_count")"
-git_commits="$(json_field "$summary_json" "git_commits")"
-decision_lines="$(json_field "$summary_json" "decision_lines")"
-edited_files="$(json_field "$summary_json" "edited_files")"
-user_intent="$(json_field "$summary_json" "user_intent")"
+compressed_conversation="$(json_field "$compress_json" "compressed_conversation")"
+first_user="$(json_field "$compress_json" "first_user")"
+last_user="$(json_field "$compress_json" "last_user")"
+tool_count="$(json_field "$compress_json" "tool_count")"
+tool_names="$(json_field "$compress_json" "tool_names")"
+error_count="$(json_field "$compress_json" "error_count")"
+git_commits="$(json_field "$compress_json" "git_commits")"
+decision_lines="$(json_field "$compress_json" "decision_lines")"
+edited_files="$(json_field "$compress_json" "edited_files")"
 
 # Skip if no meaningful content
 if [ -z "$first_user" ] && [ -z "$git_commits" ] && [ "$tool_count" -lt 5 ] 2>/dev/null; then
@@ -110,15 +111,18 @@ git_log="$(git log --oneline --since='12 hours ago' --no-merges 2>/dev/null | he
 # Truncate inputs
 first_user_t="$(truncate_to "$first_user" 300)"
 last_user_t="$(truncate_to "$last_user" 300)"
-tool_names_t="$(truncate_to "$tool_names" 100)"
-edited_files_t="$(truncate_to "$edited_files" 200)"
 git_commits_t="$(truncate_to "$git_commits" 500)"
 decision_lines_t="$(truncate_to "$decision_lines" 400)"
-user_intent_t="$(truncate_to "$user_intent" 400)"
+edited_files_t="$(truncate_to "$edited_files" 200)"
 session_recap_t="$(truncate_to "$session_recap" 300)"
+# Compressed conversation: 40K chars ≈ 10K tokens, well within haiku's 200K limit
+compressed_t="$(truncate_to "$compressed_conversation" 40000)"
 
 # --- Summarize with haiku ---
-# If Claude left a session recap, include it as the highest-quality signal
+# Three-tier signal priority:
+# 1. Claude's session recap (if present in last_assistant_message)
+# 2. Git commits + compressed conversation (full session narrative)
+# 3. User messages (intent context)
 recap_section=""
 if [ -n "$session_recap_t" ]; then
     recap_section="
@@ -146,17 +150,19 @@ Key decisions/milestones:
 ${decision_lines_t}
 
 Files edited: ${edited_files_t}
-Tools used: ${tool_count} (${tool_names_t})
-Errors: ${error_count}
 
-User intent (what the user asked for):
+User intent:
 First: ${first_user_t}
-Mid-session: ${user_intent_t}
 Last: ${last_user_t}
+
+Full compressed conversation (the complete session narrative):
+${compressed_t}
 
 Context:
 - Project: ${project_name}
 - Branch: ${branch}
+- Tools used: ${tool_count} (${tool_names})
+- Errors: ${error_count}
 
 Rules:
 - Output ONLY the markdown block, nothing else
@@ -164,7 +170,7 @@ Rules:
 - Keep each bullet to one line
 - If a session recap is provided, it is the most accurate source — prioritize it
 - The git commits are the ground truth of what was done — use them for Outcome
-- Use the user intent messages for Goal
+- The compressed conversation gives you the full session flow — use it for Goal and Decisions
 - For Key files, use the files from commits and edits, not guesses
 - If no decisions were made, write 'None'
 - If nothing is open, write 'None'"

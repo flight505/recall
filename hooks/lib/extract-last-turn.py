@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Extract conversation data from Claude Code JSONL transcript.
 
-Two modes:
+Three modes:
   summary  — For stop.sh: first/last user msg, middle samples, last assistant response,
               tool count/names, file paths, error count
   working  — For pre-compact.sh: last 5 user msgs, last 3 assistant msgs, file paths
+  compress — For stop-compressed.sh: full conversation compressed by stripping
+              mechanical overhead (tool_result content, progress, system entries).
+              Gives haiku the full session narrative instead of fragments.
 
 Streams JSONL line-by-line — never loads full file into memory.
 Reads from stdin.
@@ -304,9 +307,164 @@ def mode_working(lines):
     json.dump(result, sys.stdout)
 
 
+def mode_compress(lines):
+    """Compress mode: strip mechanical overhead, keep full session narrative.
+
+    Skips progress, system, queue-operation, file-history-snapshot entries.
+    Skips user entries that are just tool_result echoes.
+    Keeps user text (truncated to 500 chars) and assistant text + tool names.
+    Also extracts anchors (git commits, decisions, edited files, etc).
+    """
+    compressed = []
+    first_user = None
+    last_user = None
+    tool_count = 0
+    tool_names = set()
+    file_paths = set()
+    error_count = 0
+    git_commits = []
+    decision_lines = []
+    edited_files = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # Skip non-conversation entry types at top level
+        entry_type = entry.get("type", "")
+        if entry_type in ("progress", "system", "queue-operation",
+                          "file-history-snapshot"):
+            continue
+
+        # Resolve role and content (top-level or nested message format)
+        role = entry.get("role", "")
+        content = entry.get("content", "")
+        if not role and "message" in entry:
+            msg = entry["message"]
+            if isinstance(msg, dict):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+
+        if role not in ("user", "assistant"):
+            continue
+
+        if role == "user":
+            # Skip user entries that are just tool_result echoes
+            if isinstance(content, list):
+                has_tool_result = any(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content
+                )
+                if has_tool_result:
+                    # Still count errors from tool results
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                            if block.get("is_error"):
+                                error_count += 1
+                    continue
+
+            text = extract_text(content)
+            clean = text.strip()
+            if not clean:
+                continue
+
+            # Track first/last non-noise user messages
+            if not is_noise(clean):
+                if first_user is None:
+                    first_user = clean
+                last_user = clean
+
+            # Output user line (truncate to 500 chars)
+            compressed.append("USER: " + clean[:500])
+
+        elif role == "assistant":
+            text = extract_text(content)
+
+            # Extract anchors from assistant content
+            if text.strip():
+                decision_lines.extend(extract_decision_lines(text))
+
+            if isinstance(content, list):
+                # Build assistant line: text + tool references
+                parts = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type", "")
+                    if btype == "text":
+                        t = block.get("text", "").strip()
+                        if t:
+                            parts.append(t[:300])
+                    elif btype == "tool_use":
+                        tool_count += 1
+                        name = block.get("name", "unknown")
+                        tool_names.add(name)
+                        inp = block.get("input", {})
+                        # Extract file path for compact tool reference
+                        fp = ""
+                        if isinstance(inp, dict):
+                            for key in ("file_path", "path", "filePath"):
+                                val = inp.get(key)
+                                if val and isinstance(val, str):
+                                    fp = val
+                                    break
+                            if not fp:
+                                cmd = inp.get("command", "")
+                                if isinstance(cmd, str) and len(cmd) < 120:
+                                    fp = cmd
+                        if fp:
+                            parts.append("[%s: %s]" % (name, fp))
+                        else:
+                            parts.append("[%s]" % name)
+
+                # Collect git commits, edited files, file paths
+                git_commits.extend(extract_git_commits(content))
+                edited_files.extend(extract_edited_files(content))
+                file_paths.update(extract_file_paths(content))
+
+                combined = " ".join(parts)
+                if combined.strip():
+                    compressed.append("ASSISTANT: " + combined[:600])
+            else:
+                # Content is a plain string
+                if text.strip():
+                    compressed.append("ASSISTANT: " + text.strip()[:600])
+
+    # Deduplicate anchors
+    unique_edits = sorted(set(edited_files))
+
+    seen = set()
+    unique_decisions = []
+    for dl in decision_lines:
+        if dl not in seen:
+            seen.add(dl)
+            unique_decisions.append(dl)
+        if len(unique_decisions) >= 5:
+            break
+
+    result = {
+        "compressed_conversation": "\n".join(compressed),
+        "git_commits": " || ".join(git_commits[:10]),
+        "file_paths": ", ".join(sorted(file_paths)[:20]),
+        "decision_lines": " || ".join(unique_decisions),
+        "edited_files": ", ".join(unique_edits[:15]),
+        "first_user": first_user or "",
+        "last_user": last_user or "",
+        "tool_count": tool_count,
+        "tool_names": ", ".join(sorted(tool_names)),
+        "error_count": error_count,
+    }
+    json.dump(result, sys.stdout)
+
+
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("summary", "working"):
-        print("Usage: extract-last-turn.py <summary|working>", file=sys.stderr)
+    if len(sys.argv) < 2 or sys.argv[1] not in ("summary", "working", "compress"):
+        print("Usage: extract-last-turn.py <summary|working|compress>", file=sys.stderr)
         sys.exit(1)
 
     mode = sys.argv[1]
@@ -314,6 +472,8 @@ def main():
 
     if mode == "summary":
         mode_summary(lines)
+    elif mode == "compress":
+        mode_compress(lines)
     else:
         mode_working(lines)
 
