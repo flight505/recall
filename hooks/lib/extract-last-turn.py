@@ -373,11 +373,14 @@ def mode_compress(lines):
             if not clean:
                 continue
 
-            # Track first/last non-noise user messages
-            if not is_noise(clean):
-                if first_user is None:
-                    first_user = clean
-                last_user = clean
+            # Skip system-injected noise from the compressed narrative
+            if is_noise(clean):
+                continue
+
+            # Track first/last user messages
+            if first_user is None:
+                first_user = clean
+            last_user = clean
 
             # Output user line (truncate to 500 chars)
             compressed.append("USER: " + clean[:500])
