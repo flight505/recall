@@ -122,6 +122,21 @@ All data lives at `${CLAUDE_PLUGIN_DATA}/projects/<project-hash>/` where the has
 | `pre-compact.sh` | PreCompact | sync | 30s | Save working state |
 | `post-compact.sh` | PostCompact | sync | 5s | Log event + capture compact_summary |
 
+## recall vs Auto-Dream
+
+Claude Code recently introduced **auto-dream** — a built-in memory consolidation feature that reorganizes auto-memory files (`~/.claude/projects/<project>/memory/`). recall and auto-dream are **complementary, not competing:**
+
+| | Auto-dream (built-in) | recall |
+|---|---|---|
+| **Purpose** | Consolidate Claude's auto-memory notes | Capture session-level episodic history |
+| **Storage** | `~/.claude/projects/<project>/memory/` | `${CLAUDE_PLUGIN_DATA}/projects/<hash>/` |
+| **Trigger** | Background, automatic | Session end (Stop hook) |
+| **Compaction protection** | No | Yes (PreCompact + PostCompact) |
+| **Consolidation** | Yes — reorganizes memory files | Episodic logs (append-only) |
+| **What it captures** | Learnings Claude decides to keep | Full session narrative via anchored compression |
+
+Auto-dream consolidates *what Claude remembers*. Recall captures *what happened* — the session timeline, files changed, decisions made, and open work. They write to different storage paths and serve different purposes. Both can run simultaneously.
+
 ## Configuration
 
 No configuration needed. recall uses `${CLAUDE_PLUGIN_DATA}` (set by Claude Code) for storage, falling back to `~/.recall` if unset.
