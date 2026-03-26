@@ -20,11 +20,61 @@ claude plugin add flight505/recall
 
 ## How It Works
 
-1. **Session ends** — The Stop hook extracts file paths, tool names, mid-session messages, and error counts from the transcript, then sends them to Haiku for a structured summary. The summary is appended to today's episodic log.
+1. **Session ends** — The Stop hook compresses the transcript by stripping mechanical overhead (tool outputs, progress events, system metadata), preserving the full conversational narrative. Git commits anchor the summary as ground truth. Haiku produces a structured episodic entry.
 
 2. **Next session starts** — The SessionStart hook reads recent episodic entries, semantic facts, and branch-matching history, then injects the most relevant context (up to 4K chars) via `additionalContext`.
 
 3. **Context compacts** — PreCompact saves a working-state snapshot before context is lost. PostCompact logs the event and captures Claude's compaction summary. SessionStart restores working state when `source=compact`.
+
+## Anchored Compression
+
+The core of recall's capture quality. Instead of extracting fragments from transcripts, recall compresses the entire conversation:
+
+```
+Raw transcript (3.4 MB, 1252 lines)
+    │
+    ▼ Strip: tool_result content, progress events, system entries, file-history
+    ▼ Filter: system-injected noise from user messages
+    ▼ Keep: user text + assistant text + [ToolName: file_path] references
+    │
+Compressed narrative (42 KB, ~330 lines) — 98.8% reduction
+    │
+    ▼ Anchor: git commits, decision lines, edited files (structured, never lost)
+    ▼ Enrich: git log from the session timeframe
+    │
+Haiku prompt (anchors + full narrative + git log)
+    │
+    ▼ Single haiku call (~12K input tokens)
+    │
+Episodic entry (### HH:MM — summary with Goal, Outcome, Key files, Decisions, Open)
+```
+
+**Three-tier signal priority:**
+
+| Tier | Source | Quality |
+|------|--------|---------|
+| 1 | Claude's session recap (from CLAUDE.md instruction) | Highest — Claude wrote it with full context |
+| 2 | Git commits + compressed conversation | High — artifacts are ground truth |
+| 3 | User messages (noise-filtered) | Context — intent, not outcomes |
+
+**Tested against ground truth:** Anchored compression scores 7/10 on session event coverage vs 0-1.5/10 for user-message-only approaches. Resilient to vague user prompts — git commits and assistant narrative carry the signal.
+
+## CLAUDE.md Integration
+
+For best results, add this to your global `~/.claude/CLAUDE.md`:
+
+```markdown
+### Session Close (for recall)
+
+When a session is ending, include a brief session recap:
+
+**Session:** <one-line summary>
+**Files:** <key files changed>
+**Decisions:** <notable choices, or "None">
+**Open:** <unfinished work, or "None">
+```
+
+When Claude follows this instruction, recall captures it as the highest-priority signal — better than any automated extraction.
 
 ## Memory Types
 
@@ -50,18 +100,6 @@ A subagent searches your memory files and returns a synthesized answer.
 
 ![recall architecture](assets/architecture.png)
 
-### Extraction Pipeline (v1.1.0)
-
-The Stop hook extracts rich data from the transcript JSONL before summarization:
-
-| Field | Source | Purpose |
-|-------|--------|---------|
-| `file_paths` | tool_use blocks (file_path, path, filePath keys + command regex) | Accurate "Key files" in episodic entries |
-| `tool_names` | tool_use block names (Read, Edit, Bash, etc.) | Session activity profile |
-| `middle_sample` | 3 evenly-spaced user messages from the session middle | Session arc visibility for Haiku |
-| `error_count` | tool_result blocks with `is_error: true` | Error awareness |
-| `first_user` / `last_user` / `last_assistant` | First/last conversation turns | Session bookends |
-
 ### Injection Budget
 
 SessionStart injects up to **4000 characters** (~1000 tokens, <0.5% of a 200K context window) with this priority:
@@ -80,7 +118,7 @@ All data lives at `${CLAUDE_PLUGIN_DATA}/projects/<project-hash>/` where the has
 | Hook | Event | Sync/Async | Timeout | What it does |
 |------|-------|-----------|---------|-------------|
 | `session-start.sh` | SessionStart | sync | 5s | Inject recalled memories (4K budget) |
-| `stop.sh` | Stop | async | 30s | Extract + summarize session |
+| `stop.sh` | Stop | async | 30s | Compress + summarize session |
 | `pre-compact.sh` | PreCompact | sync | 30s | Save working state |
 | `post-compact.sh` | PostCompact | sync | 5s | Log event + capture compact_summary |
 
