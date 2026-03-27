@@ -55,6 +55,20 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "_comment": "Lightweight last-chance capture — saves recap or git log if Stop hook didn't run. Must complete within 1.5s default timeout.",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd' session-end.sh",
+            "timeout": 1500,
+            "async": false
+          }
+        ]
+      }
     ]
   }
 }

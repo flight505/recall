@@ -19,6 +19,7 @@
     "semantic-memory"
   ],
   "skills": [
-    "./skills/recall"
+    "./skills/recall",
+    "./skills/save"
   ]
 }
